@@ -1,0 +1,928 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>เกม AR จำแนกอาหารหลัก 5 หมู่</title>
+    <!-- Tailwind CSS for UI styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- MediaPipe for Hand Tracking -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&family=Mitr:wght@300;400;600;700&display=swap');
+        
+        body {
+            font-family: 'Mitr', sans-serif;
+            background: linear-gradient(135deg, #10b981 0%, #064e3b 100%);
+            overflow: hidden;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        
+        /* Mirroring camera feed for natural interaction */
+        #webcam, #gameCanvas {
+            transform: scaleX(-1);
+        }
+
+        /* Pulsing animation for the virtual pinch zone helper */
+        @keyframes helper-pulse {
+            0%, 100% { transform: scale(1); opacity: 0.8; }
+            50% { transform: scale(1.1); opacity: 1; }
+        }
+        .btn-helper-pulse {
+            animation: helper-pulse 1.5s infinite;
+        }
+    </style>
+</head>
+<body class="w-screen h-screen flex flex-col items-center justify-center p-2 md:p-4">
+
+    <!-- Main Game Frame -->
+    <div class="relative w-full max-w-4xl aspect-[4/3] bg-slate-900 rounded-3xl overflow-hidden shadow-2xl border-4 border-emerald-400 flex flex-col">
+        
+        <!-- Webcam (Hidden, rendered on canvas) -->
+        <video id="webcam" class="hidden" autoplay playsinline></video>
+        
+        <!-- Game Render Canvas -->
+        <canvas id="gameCanvas" class="absolute top-0 left-0 w-full h-full z-10 object-cover"></canvas>
+
+        <!-- UI HUD Overlay (Layer 20) -->
+        <div class="absolute inset-0 z-20 pointer-events-none flex flex-col justify-between p-4 md:p-6">
+            
+            <!-- Top HUD: Scores, Empty Basket Slots, Timer -->
+            <div class="flex justify-between items-start w-full gap-2">
+                <!-- Score Card -->
+                <div class="bg-black/75 backdrop-blur-md text-white rounded-2xl p-3 flex flex-col gap-0.5 pointer-events-auto shadow-lg border border-white/10">
+                    <div class="text-[10px] text-emerald-400 font-semibold tracking-wide">คะแนนสอบ</div>
+                    <div class="text-xl md:text-2xl font-bold flex items-center gap-1.5">
+                        <i class="fa-solid fa-star text-yellow-400 animate-pulse"></i>
+                        <span id="scoreText">0</span>
+                    </div>
+                </div>
+
+                <!-- Blind Basket Slots (Zero Clues) -->
+                <div class="bg-black/75 backdrop-blur-md text-white rounded-2xl p-3 flex flex-col items-center gap-1 pointer-events-auto border border-white/10 flex-1 max-w-md shadow-lg">
+                    <div class="text-[10px] text-gray-300 font-semibold">อาหารในตะกร้าปัจจุบัน (เลือกให้ครบ 5 หมู่)</div>
+                    <div class="flex gap-2 mt-1" id="basketSlots">
+                        <!-- Slots generated dynamically -->
+                    </div>
+                </div>
+
+                <!-- Timer 3 Minutes -->
+                <div class="bg-black/75 backdrop-blur-md text-white rounded-2xl p-3 flex flex-col items-end gap-0.5 pointer-events-auto border border-white/10 shadow-lg">
+                    <div class="text-[10px] text-red-300 font-semibold">เวลาที่เหลือ</div>
+                    <div class="text-xl md:text-2xl font-bold text-red-400" id="timerText">03:00</div>
+                </div>
+            </div>
+
+            <!-- Bottom HUD: Rules & Basket Actions -->
+            <div class="flex justify-between items-end w-full gap-4">
+                <!-- Rules Box -->
+                <div class="bg-black/85 backdrop-blur-md text-white rounded-xl p-3 max-w-xs text-[11px] md:text-xs pointer-events-auto border border-white/10 shadow-lg">
+                    <p class="font-semibold text-emerald-400 mb-1"><i class="fa-solid fa-brain mr-1"></i> กติกาการทดสอบ:</p>
+                    <p class="text-gray-300 leading-relaxed">เลือกอาหารลงตะกร้าให้ได้ <strong class="text-white">ครบถ้วนทั้ง 5 หมู่มากที่สุด</strong> โดยคะแนนจะคิดตามหมู่สารอาหารที่ระบุได้ถูกต้องโดยไม่ซ้ำหมู่กัน!</p>
+                </div>
+
+                <!-- Control Panel -->
+                <div class="flex flex-col gap-2 items-end pointer-events-auto">
+                    <!-- Clear Basket Button -->
+                    <button id="clearBasketBtn" class="bg-red-500 hover:bg-red-600 active:scale-95 text-white font-bold py-2 px-4 rounded-xl text-xs md:text-sm shadow-md transition duration-150 flex items-center gap-1.5">
+                        <i class="fa-solid fa-trash-can"></i> ล้างตะกร้าเพื่อเลือกใหม่
+                    </button>
+
+                    <!-- Camera Connection Tracker -->
+                    <div class="bg-black/85 backdrop-blur-md text-white rounded-xl p-2 text-[10px] md:text-xs border border-white/10 flex items-center gap-2">
+                        <div id="trackingStatusDot" class="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse"></div>
+                        <span id="trackingStatusText" class="font-semibold">ระบบกล้องยังไม่ทำงาน...</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- CUSTOM COVER START SCREEN (Layer 30) -->
+        <div id="startModal" class="absolute inset-0 z-30 bg-black flex items-center justify-center">
+            <!-- Fullscreen Cover Image -->
+            <div class="relative w-full h-full flex items-center justify-center overflow-hidden">
+                <!-- Corrected Image Source referencing the uploaded file "ChatGPT Image Jul 15, 2026, 10_22_06 AM.png" -->
+                <img src="ChatGPT Image Jul 15, 2026, 10_22_06 AM.png" alt="เกม AR อาหารหลัก 5 หมู่" class="w-full h-full object-contain pointer-events-none select-none bg-emerald-950">
+                
+                <!-- HUD info for AR Calibration on Cover -->
+                <div class="absolute top-4 left-4 bg-black/80 backdrop-blur-sm text-white px-3 py-1.5 rounded-xl text-xs flex items-center gap-2 border border-white/10">
+                    <div id="coverStatusDot" class="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse"></div>
+                    <span id="coverStatusText">กำลังเชื่อมต่อกล้อง...</span>
+                </div>
+
+                <!-- AR Interactive Hotspot Area overlaying "เริ่มเล่น" button on the image -->
+                <!-- Coordinates targeted to match the bottom-center button "เริ่มเล่น" of the uploaded poster -->
+                <div class="absolute bottom-[4.5%] md:bottom-[5.5%] left-1/2 transform -translate-x-1/2 w-[24%] h-[9%] min-w-[140px] min-h-[44px] flex items-center justify-center">
+                    <!-- Virtual Target Zone for pinching (Transparent but interactive) -->
+                    <div id="virtualStartBtn" class="w-full h-full rounded-full cursor-pointer pointer-events-auto flex items-center justify-center relative">
+                        <!-- Active Pulsing Guide Ring -->
+                        <div class="absolute inset-0 border-4 border-yellow-400 bg-yellow-400/20 rounded-full btn-helper-pulse"></div>
+                        
+                        <!-- Floating instruction bubble -->
+                        <div class="absolute -top-7 bg-yellow-400 text-slate-900 font-black px-2 py-0.5 rounded-md text-[9px] md:text-xs shadow-md whitespace-nowrap flex items-center gap-1 animate-bounce">
+                            <i class="fa-solid fa-hand-pointer"></i> จีบมือตรงนี้เพื่อเริ่มเล่น!
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- End Evaluation Screen Overlay -->
+        <div id="resultModal" class="absolute inset-0 z-30 bg-black/90 backdrop-blur-md hidden flex-col items-center justify-center p-4 md:p-6 text-center text-white overflow-y-auto">
+            <div class="bg-slate-950 border-4 border-emerald-400 rounded-3xl p-6 md:p-8 max-w-lg w-full shadow-2xl flex flex-col items-center transform scale-95 transition-all">
+                
+                <div id="resultIcon" class="w-20 h-20 rounded-full flex items-center justify-center text-5xl mb-3 shadow-inner">
+                    🎉
+                </div>
+                
+                <h2 id="resultTitle" class="text-2xl md:text-3xl font-black mb-1">ส่งผลประเมินเรียบร้อย!</h2>
+                <p class="text-xs text-gray-400 mb-4">สรุปผลการวัดคะแนนวิชาสุขศึกษา (สารอาหารหลัก 5 หมู่)</p>
+
+                <!-- Final Score Display -->
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl px-6 py-3 mb-4 w-full">
+                    <span class="text-xs text-gray-400 block uppercase tracking-wider">คะแนนสอบที่ได้รับ</span>
+                    <div class="flex items-center justify-center gap-2">
+                        <span id="resultScore" class="text-5xl md:text-6xl font-black text-yellow-400">0</span>
+                        <span class="text-2xl md:text-3xl text-gray-500 font-bold">/ 5</span>
+                    </div>
+                    <span class="text-xs text-emerald-400 block mt-1 font-medium" id="scoreInterpretation">เก็บได้สำเร็จ 0 หมู่</span>
+                </div>
+
+                <!-- Missing Groups Diagnostic Display -->
+                <div id="missingReportBox" class="w-full mb-4 text-left hidden">
+                    <!-- Dynamic details about missing food groups injected here -->
+                </div>
+
+                <!-- Showcase Chosen Foods -->
+                <div class="w-full mb-6">
+                    <p class="text-xs text-slate-400 mb-2 text-center">อาหารทั้ง 5 ชิ้นที่นักเรียนคัดเลือกมาใส่ตะกร้า:</p>
+                    <div id="finalBasketShowcase" class="flex justify-center gap-2">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
+                <button id="restartBtn" class="bg-gradient-to-r from-emerald-400 to-teal-500 hover:from-emerald-500 hover:to-teal-600 text-slate-950 font-bold px-10 py-3 rounded-2xl text-base md:text-lg shadow-lg hover:shadow-emerald-500/20 transition duration-200 pointer-events-auto flex items-center gap-2">
+                    <i class="fa-solid fa-rotate-left"></i> ลองทดสอบใหม่อีกรอบ (Restart)
+                </button>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Extra educational footer -->
+    <div class="mt-4 text-center text-xs text-slate-200 max-w-2xl px-4">
+        <p class="font-semibold text-slate-100"><i class="fa-solid fa-circle-info mr-1"></i> รายละเอียดเพื่อคุณครู:</p>
+        <p class="text-slate-300 mt-1">ใช้นิ้วจีบเข้าหากันบนกล้อง iPad ให้ตรงกับปุ่ม "เริ่มเล่น" หรือใช้นิ้วกดที่ปุ่มเริ่มเล่นบนจอตรงๆ เพื่อกระตุ้นระบบ AR และเสียงได้อย่างแม่นยำ</p>
+    </div>
+
+    <script>
+        // --- Web Audio API (Synthesized SFX without external asset dependencies) ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        function playSound(type) {
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+            
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            
+            if (type === 'grab') {
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(450, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(1000, audioCtx.currentTime + 0.08);
+                gain.gain.setValueAtTime(0.12, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.08);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.08);
+            } else if (type === 'drop') {
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(550, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(250, audioCtx.currentTime + 0.12);
+                gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.12);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.12);
+            } else if (type === 'clear') {
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(300, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(150, audioCtx.currentTime + 0.2);
+                gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.2);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.2);
+            } else if (type === 'correct') {
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(523.25, audioCtx.currentTime); // C5
+                osc.frequency.setValueAtTime(659.25, audioCtx.currentTime + 0.1); // E5
+                osc.frequency.setValueAtTime(783.99, audioCtx.currentTime + 0.2); // G5
+                osc.frequency.setValueAtTime(1046.50, audioCtx.currentTime + 0.3); // C6
+                gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.5);
+            } else if (type === 'fail') {
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(180, audioCtx.currentTime);
+                osc.frequency.linearRampToValueAtTime(90, audioCtx.currentTime + 0.45);
+                gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.5);
+            } else if (type === 'applause') {
+                for (let i = 0; i < 22; i++) {
+                    const offset = i * 0.07 + Math.random() * 0.04;
+                    const clapOsc = audioCtx.createOscillator();
+                    const clapGain = audioCtx.createGain();
+                    clapOsc.type = 'triangle';
+                    clapOsc.frequency.setValueAtTime(180 + Math.random() * 120, audioCtx.currentTime + offset);
+                    clapOsc.frequency.exponentialRampToValueAtTime(40, audioCtx.currentTime + offset + 0.05);
+                    clapGain.gain.setValueAtTime(0.12, audioCtx.currentTime + offset);
+                    clapGain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + offset + 0.05);
+                    clapOsc.connect(clapGain);
+                    clapGain.connect(audioCtx.destination);
+                    clapOsc.start(audioCtx.currentTime + offset);
+                    clapOsc.stop(audioCtx.currentTime + offset + 0.06);
+                }
+            }
+        }
+
+        // --- STREAMING_CHUNK: Defining food templates and groups database ---
+        // --- Food Database (All Labels / Numbers stripped during interactive loop) ---
+        const FOOD_GROUPS = {
+            1: { name: "โปรตีน (เนื้อสัตว์ ไข่ นม ถั่ว)", color: "#f87171" },
+            2: { name: "คาร์โบไฮเดรต (ข้าว แป้ง น้ำตาล เผือก มัน)", color: "#fbbf24" },
+            3: { name: "เกลือแร่ (พืชผักชนิดต่างๆ)", color: "#34d399" },
+            4: { name: "วิตามิน (ผลไม้ชนิดต่างๆ)", color: "#f472b6" },
+            5: { name: "ไขมัน (ไขมันจากพืชและสัตว์)", color: "#fb923c" }
+        };
+
+        const FOOD_TEMPLATES = [
+            // หมู่ 1
+            { name: "เนื้อไก่", group: 1, emoji: "🍗" },
+            { name: "เนื้อปลา", group: 1, emoji: "🐟" },
+            { name: "ไข่ไก่", group: 1, emoji: "🥚" },
+            { name: "นมสด", group: 1, emoji: "🥛" },
+            { name: "ถั่วเมล็ด", group: 1, emoji: "🥜" },
+            { name: "เนื้อวัว", group: 1, emoji: "🥩" },
+            // หมู่ 2
+            { name: "ขนมปัง", group: 2, emoji: "🍞" },
+            { name: "ข้าวสวย", group: 2, emoji: "🍚" },
+            { name: "ข้าวโพด", group: 2, emoji: "🌽" },
+            { name: "มันฝรั่ง", group: 2, emoji: "🥔" },
+            { name: "น้ำตาล", group: 2, emoji: "🍬" },
+            // หมู่ 3
+            { name: "บลอกโคลี", group: 3, emoji: "🥦" },
+            { name: "มะเขือเทศ", group: 3, emoji: "🍅" },
+            { name: "แครอท", group: 3, emoji: "🥕" },
+            { name: "ผักกาดหอม", group: 3, emoji: "🥬" },
+            { name: "ฟักทอง", group: 3, emoji: "🎃" },
+            // หมู่ 4
+            { name: "แอปเปิ้ล", group: 4, emoji: "🍎" },
+            { name: "กล้วยหอม", group: 4, emoji: "🍌" },
+            { name: "ส้มหวาน", group: 4, emoji: "🍊" },
+            { name: "แตงโม", group: 4, emoji: "🍉" },
+            { name: "สตรอว์เบอร์รี", group: 4, emoji: "🍓" },
+            // หมู่ 5
+            { name: "เนย", group: 5, emoji: "🧈" },
+            { name: "น้ำมันพืช", group: 5, emoji: "🥥" },
+            { name: "ชีสแผ่น", group: 5, emoji: "🧀" },
+            { name: "น้ำมันมะกอก", group: 5, emoji: "🫒" }
+        ];
+
+        // --- Core Game Variables ---
+        const videoElement = document.getElementById('webcam');
+        const canvasElement = document.getElementById('gameCanvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        
+        let score = 0;
+        let timeLeft = 180; // 3 Minutes = 180 Seconds
+        let gameActive = false;
+        let spawnedFoods = [];
+        let isCameraInitialized = false;
+        
+        let basket = {
+            x: 0,
+            y: 0,
+            width: 240,
+            height: 95,
+            items: [] // Max capacity 5 items
+        };
+
+        let currentPinchPoint = null; 
+        let isPinching = false;
+        let draggedFood = null;
+        
+        let mouseIsDown = false;
+
+        // Initialize neutral basket HUD slots
+        function initBasketSlots() {
+            const container = document.getElementById('basketSlots');
+            container.innerHTML = '';
+            for (let i = 0; i < 5; i++) {
+                const slot = document.createElement('div');
+                slot.id = `slot-${i}`;
+                slot.className = "w-11 h-11 md:w-14 md:h-14 rounded-2xl flex items-center justify-center border-2 border-dashed border-gray-500 text-white bg-slate-800/40 text-lg md:text-2xl font-bold transition-all duration-300";
+                slot.innerHTML = `<span class="text-xs text-gray-500">?</span>`;
+                container.appendChild(slot);
+            }
+        }
+
+        // Update the slots on HUD
+        function updateBasketSlotsUI() {
+            for (let i = 0; i < 5; i++) {
+                const slot = document.getElementById(`slot-${i}`);
+                if (basket.items[i]) {
+                    slot.className = "w-11 h-11 md:w-14 md:h-14 rounded-2xl flex flex-col items-center justify-center border-2 border-solid border-emerald-400 bg-slate-800 text-lg md:text-2xl shadow-lg scale-105 transition-all duration-300";
+                    slot.innerHTML = `<span>${basket.items[i].emoji}</span>`;
+                } else {
+                    slot.className = "w-11 h-11 md:w-14 md:h-14 rounded-2xl flex items-center justify-center border-2 border-dashed border-gray-500 text-white bg-slate-800/40 text-lg md:text-2xl font-bold transition-all duration-300";
+                    slot.innerHTML = `<span class="text-xs text-gray-500">?</span>`;
+                }
+            }
+        }
+
+        // --- STREAMING_CHUNK: Coding the falling food physics and boundary checks ---
+        // --- Food class for falling objects ---
+        class FallingFood {
+            constructor(spawnX) {
+                const template = FOOD_TEMPLATES[Math.floor(Math.random() * FOOD_TEMPLATES.length)];
+                this.name = template.name;
+                this.group = template.group;
+                this.emoji = template.emoji;
+                
+                this.size = 58;
+                this.x = spawnX;
+                this.y = -50;
+                
+                // ADJUSTED FALL SPEED (Reduced by 40% for easier and gentle movement)
+                this.speed = Math.random() * 0.5 + 0.6; // Soft, slow descent
+                
+                // Smoother, less aggressive sway
+                this.wobbleSpeed = Math.random() * 0.02 + 0.01;
+                this.wobbleAmt = Math.random() * 6 + 2;
+                this.wobbleOffset = Math.random() * 100;
+                this.isGrabbed = false;
+            }
+
+            update(time) {
+                if (this.isGrabbed && currentPinchPoint) {
+                    this.x = currentPinchPoint.x;
+                    this.y = currentPinchPoint.y;
+                } else {
+                    this.y += this.speed;
+                    this.x += Math.sin(time * this.wobbleSpeed + this.wobbleOffset) * 0.2;
+                }
+            }
+
+            draw(ctx) {
+                ctx.save();
+                ctx.shadowColor = 'rgba(255, 255, 255, 0.4)';
+                ctx.shadowBlur = this.isGrabbed ? 15 : 6;
+                
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size / 2, 0, Math.PI * 2);
+                ctx.fillStyle = this.isGrabbed ? "rgba(16, 185, 129, 0.9)" : "rgba(30, 41, 59, 0.85)";
+                ctx.fill();
+                ctx.strokeStyle = this.isGrabbed ? "#10b981" : "#ffffff";
+                ctx.lineWidth = 2.5;
+                ctx.stroke();
+
+                // Draw Emoji
+                ctx.shadowBlur = 0;
+                ctx.font = `${this.size * 0.5}px Arial`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(this.emoji, this.x, this.y - 6);
+
+                // Draw Item Name (Hiding classification codes)
+                ctx.fillStyle = '#ffffff';
+                ctx.font = 'bold 9px Mitr';
+                ctx.fillText(this.name, this.x, this.y + 15);
+
+                ctx.restore();
+            }
+        }
+
+        // --- Helper function to get non-overlapping spawn position ---
+        function getSafeSpawnX() {
+            const padding = 65; 
+            const minX = padding;
+            const maxX = canvasElement.width - padding;
+            
+            let attempts = 0;
+            let safeX = Math.random() * (maxX - minX) + minX;
+            
+            while (attempts < 15) {
+                let overlapDetected = false;
+                for (let food of spawnedFoods) {
+                    if (food.y < 120) {
+                        const distanceX = Math.abs(food.x - safeX);
+                        if (distanceX < padding) {
+                            overlapDetected = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if (!overlapDetected) {
+                    return safeX;
+                }
+                
+                safeX = Math.random() * (maxX - minX) + minX;
+                attempts++;
+            }
+            
+            return safeX; 
+        }
+
+        // --- STREAMING_CHUNK: Setting up the game triggers and countdown ---
+        // --- Game Setup Controls ---
+        function startGame() {
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+
+            if (!isCameraInitialized) {
+                initCamera();
+                isCameraInitialized = true;
+            }
+
+            document.getElementById('startModal').classList.add('hidden');
+            document.getElementById('resultModal').classList.add('hidden');
+            
+            score = 0;
+            timeLeft = 180; // Reset to 3 minutes
+            spawnedFoods = [];
+            basket.items = [];
+            draggedFood = null;
+            
+            document.getElementById('scoreText').innerText = score;
+            formatTimerDisplay();
+            
+            initBasketSlots();
+            updateBasketSlotsUI();
+
+            gameActive = true;
+            countdown();
+        }
+
+        function formatTimerDisplay() {
+            const minutes = Math.floor(timeLeft / 60);
+            const seconds = timeLeft % 60;
+            const displaySecs = seconds < 10 ? `0${seconds}` : seconds;
+            document.getElementById('timerText').innerText = `0${minutes}:${displaySecs}`;
+        }
+
+        function countdown() {
+            if (!gameActive) return;
+            
+            setTimeout(() => {
+                if (!gameActive) return;
+                timeLeft--;
+                formatTimerDisplay();
+                
+                if (timeLeft <= 0) {
+                    evaluateGame(); 
+                } else {
+                    countdown();
+                }
+            }, 1000);
+        }
+
+        document.getElementById('clearBasketBtn').addEventListener('click', () => {
+            if (!gameActive) return;
+            basket.items = [];
+            updateBasketSlotsUI();
+            playSound('clear');
+        });
+
+        // --- STREAMING_CHUNK: Handling user pinch and drop calculations on camera/screen ---
+        // Interactive Grab mechanics
+        function grabChecking() {
+            // CHECK PINCHING ON THE COVER GAME START AREA
+            if (document.getElementById('startModal').classList.contains('hidden') === false) {
+                if (isPinching && currentPinchPoint) {
+                    const rect = document.getElementById('virtualStartBtn').getBoundingClientRect();
+                    const containerRect = canvasElement.getBoundingClientRect();
+                    
+                    // Since hand cursor on canvas coordinates is mirrored (drawn on mirrored scale),
+                    // let's map screen coordinates accurately to matching areas.
+                    // We can check if the unmirrored screen coordinate of the hand is inside the button.
+                    const handScreenX = containerRect.left + (1 - (currentPinchPoint.x / canvasElement.width)) * containerRect.width;
+                    const handScreenY = containerRect.top + (currentPinchPoint.y / canvasElement.height) * containerRect.height;
+
+                    if (handScreenX >= rect.left && handScreenX <= rect.right &&
+                        handScreenY >= rect.top && handScreenY <= rect.bottom) {
+                        startGame();
+                    }
+                }
+                return;
+            }
+
+            if (!gameActive) return;
+
+            if (isPinching && currentPinchPoint) {
+                if (!draggedFood) {
+                    for (let food of spawnedFoods) {
+                        const dist = Math.hypot(food.x - currentPinchPoint.x, food.y - currentPinchPoint.y);
+                        if (dist < food.size) {
+                            draggedFood = food;
+                            food.isGrabbed = true;
+                            playSound('grab');
+                            break;
+                        }
+                    }
+                }
+            } else {
+                if (draggedFood) {
+                    draggedFood.isGrabbed = false;
+                    
+                    const bTop = basket.y - basket.height / 2;
+                    const bLeft = basket.x - basket.width / 2;
+                    const bRight = basket.x + basket.width / 2;
+
+                    if (draggedFood.x >= bLeft && draggedFood.x <= bRight && draggedFood.y >= bTop) {
+                        if (basket.items.length < 5) {
+                            basket.items.push({
+                                name: draggedFood.name,
+                                group: draggedFood.group,
+                                emoji: draggedFood.emoji
+                            });
+                            playSound('drop');
+                            updateBasketSlotsUI();
+
+                            spawnedFoods = spawnedFoods.filter(item => item !== draggedFood);
+
+                            if (basket.items.length === 5) {
+                                evaluateGame();
+                            }
+                        }
+                    }
+                    draggedFood = null;
+                }
+            }
+        }
+
+        // --- STREAMING_CHUNK: Processing smart evaluation and missing report generation ---
+        // --- Score evaluation & diagnostics ---
+        function evaluateGame() {
+            gameActive = false;
+            
+            const resultModal = document.getElementById('resultModal');
+            const resultIcon = document.getElementById('resultIcon');
+            const resultTitle = document.getElementById('resultTitle');
+            const resultScore = document.getElementById('resultScore');
+            const scoreInterpretation = document.getElementById('scoreInterpretation');
+            const missingReportBox = document.getElementById('missingReportBox');
+            const showcase = document.getElementById('finalBasketShowcase');
+            
+            showcase.innerHTML = '';
+            basket.items.forEach(item => {
+                const bubble = document.createElement('div');
+                bubble.className = "w-11 h-11 md:w-12 md:h-12 bg-slate-800 rounded-xl flex items-center justify-center text-xl md:text-2xl border border-slate-700 shadow-md";
+                bubble.innerHTML = item.emoji;
+                showcase.appendChild(bubble);
+            });
+            if (basket.items.length === 0) {
+                showcase.innerHTML = `<span class="text-xs text-red-400">ไม่มีอาหารในตะกร้า</span>`;
+            }
+
+            const collectedGroupSet = new Set(basket.items.map(item => item.group));
+            const uniqueGroupsCount = collectedGroupSet.size;
+            
+            score = uniqueGroupsCount;
+            
+            const allGroups = [1, 2, 3, 4, 5];
+            const missingGroupIds = allGroups.filter(g => !collectedGroupSet.has(g));
+            
+            resultScore.innerText = score;
+            document.getElementById('scoreText').innerText = score;
+            scoreInterpretation.innerText = `เก็บได้สำเร็จ ${score} หมู่`;
+
+            if (missingGroupIds.length > 0) {
+                missingReportBox.classList.remove('hidden');
+                
+                let missingListHTML = missingGroupIds.map(id => {
+                    let groupDetail = FOOD_GROUPS[id];
+                    return `
+                        <div class="flex items-start gap-2 text-sm bg-slate-900 border border-slate-800 rounded-xl p-2.5">
+                            <span class="text-lg">หมู่ ${id}</span>
+                            <div class="flex-1">
+                                <p class="text-orange-400 font-bold text-xs md:text-sm">ขาดหมู่ที่ ${id}</p>
+                                <p class="text-gray-400 text-[11px] md:text-xs">${groupDetail.name}</p>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                missingReportBox.innerHTML = `
+                    <p class="text-xs text-red-400 font-bold mb-2 flex items-center gap-1">
+                        <i class="fa-solid fa-triangle-exclamation animate-pulse"></i> 
+                        กลุ่มอาหารที่นักเรียนยังเลือกขาดไป:
+                    </p>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-40 overflow-y-auto pr-1">
+                        ${missingListHTML}
+                    </div>
+                `;
+            } else {
+                missingReportBox.classList.add('hidden');
+                missingReportBox.innerHTML = '';
+            }
+
+            if (score === 5) {
+                playSound('correct');
+                setTimeout(() => playSound('applause'), 200);
+                
+                resultIcon.innerHTML = "🎉";
+                resultIcon.className = "w-20 h-20 bg-yellow-400 border-4 border-white rounded-full flex items-center justify-center text-5xl mb-3 animate-bounce shadow-lg";
+                resultTitle.innerText = "ผ่านการประเมินยอดเยี่ยม!";
+                scoreInterpretation.innerText = "คัดแยกถูกต้องครบถ้วนสมบูรณ์แบบ 5/5 หมู่!";
+            } else if (score > 0) {
+                playSound('correct');
+                
+                resultIcon.innerHTML = "👍";
+                resultIcon.className = "w-20 h-20 bg-teal-500 border-4 border-white rounded-full flex items-center justify-center text-4xl mb-3 animate-pulse shadow-lg";
+                resultTitle.innerText = "ทำได้ดีมาก!";
+            } else {
+                playSound('fail');
+                
+                resultIcon.innerHTML = "❌";
+                resultIcon.className = "w-20 h-20 bg-red-500 border-4 border-white rounded-full flex items-center justify-center text-4xl mb-3 shadow-lg";
+                resultTitle.innerText = "ยังจำแนกไม่ถูกต้อง";
+                scoreInterpretation.innerText = "นักเรียนยังไม่สามารถคัดเลือกหมู่สารอาหารได้ถูกเลย";
+            }
+            
+            resultModal.classList.remove('hidden');
+        }
+
+        // --- STREAMING_CHUNK: Coding the render loops and draw calls on canvas ---
+        // --- Canvas Animation Frame ---
+        function animationFrameHandler(timestamp) {
+            if (canvasElement.width !== canvasElement.clientWidth || canvasElement.height !== canvasElement.clientHeight) {
+                canvasElement.width = canvasElement.clientWidth;
+                canvasElement.height = canvasElement.clientHeight;
+                
+                basket.x = canvasElement.width / 2;
+                basket.y = canvasElement.height - 75;
+            }
+
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            // Draw Mirror Webcam onto Canvas
+            canvasCtx.save();
+            canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.restore();
+
+            // Run collision-grabbing check (covers both gameplay and virtual start button)
+            grabChecking();
+
+            if (gameActive) {
+                if (Math.random() < 0.013 && spawnedFoods.length < 5) {
+                    const safeX = getSafeSpawnX();
+                    spawnedFoods.push(new FallingFood(safeX));
+                }
+
+                spawnedFoods.forEach((food, i) => {
+                    food.update(timestamp);
+                    food.draw(canvasCtx);
+                    
+                    if (food.y > canvasElement.height + 60) {
+                        spawnedFoods.splice(i, 1);
+                    }
+                });
+
+                drawBasket(canvasCtx);
+            }
+
+            if (currentPinchPoint) {
+                drawActiveCursor(canvasCtx);
+            }
+
+            requestAnimationFrame(animationFrameHandler);
+        }
+
+        function drawBasket(ctx) {
+            ctx.save();
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.7)';
+            ctx.strokeStyle = '#10b981';
+            ctx.lineWidth = 4;
+            ctx.lineJoin = 'round';
+            
+            ctx.beginPath();
+            const bx = basket.x - basket.width / 2;
+            const by = basket.y - basket.height / 2;
+            
+            ctx.moveTo(bx, by);
+            ctx.lineTo(bx + basket.width, by);
+            ctx.lineTo(bx + basket.width - 25, by + basket.height);
+            ctx.lineTo(bx + 25, by + basket.height);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+
+            // Handle
+            ctx.beginPath();
+            ctx.arc(basket.x, by, basket.width / 2.6, Math.PI, 0, false);
+            ctx.strokeStyle = '#059669';
+            ctx.lineWidth = 4;
+            ctx.stroke();
+
+            // Basket details
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+            ctx.lineWidth = 1.5;
+            for (let i = bx + 25; i < bx + basket.width - 15; i += 22) {
+                ctx.beginPath();
+                ctx.moveTo(i, by);
+                ctx.lineTo(i - 12, by + basket.height);
+                ctx.stroke();
+            }
+
+            // Basket Label
+            ctx.fillStyle = '#ffffff';
+            ctx.shadowColor = '#000000';
+            ctx.shadowBlur = 4;
+            ctx.font = 'bold 15px Mitr';
+            ctx.textAlign = 'center';
+            ctx.fillText("ตะกร้าตรวจสอบ", basket.x, basket.y + 10);
+            
+            ctx.restore();
+        }
+
+        function drawActiveCursor(ctx) {
+            ctx.save();
+            const r = isPinching ? 14 : 24;
+            ctx.beginPath();
+            ctx.arc(currentPinchPoint.x, currentPinchPoint.y, r, 0, Math.PI * 2);
+            ctx.strokeStyle = isPinching ? '#10b981' : '#f59e0b';
+            ctx.lineWidth = 3.5;
+            ctx.stroke();
+            
+            ctx.beginPath();
+            ctx.arc(currentPinchPoint.x, currentPinchPoint.y, 4, 0, Math.PI * 2);
+            ctx.fillStyle = '#ffffff';
+            ctx.fill();
+            ctx.restore();
+        }
+
+        // --- STREAMING_CHUNK: Developing fallbacks for touch screen drag-and-drop ---
+        // --- Canvas Pointer Drag Fallback for Screen Touch/Mouse ---
+        function getCanvasMouseCoords(e) {
+            const rect = canvasElement.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            
+            const mappedX = ((rect.right - clientX) / rect.width) * canvasElement.width;
+            const mappedY = ((clientY - rect.top) / rect.height) * canvasElement.height;
+            return { x: mappedX, y: mappedY };
+        }
+
+        function handlePointerDown(e) {
+            mouseIsDown = true;
+            isPinching = true;
+            currentPinchPoint = getCanvasMouseCoords(e);
+        }
+
+        function handlePointerMove(e) {
+            if (!isPinching) return;
+            currentPinchPoint = getCanvasMouseCoords(e);
+        }
+
+        function handlePointerUp() {
+            mouseIsDown = false;
+            isPinching = false;
+            setTimeout(() => {
+                if(!mouseIsDown && !isPinching) {
+                    currentPinchPoint = null;
+                }
+            }, 100);
+        }
+
+        canvasElement.addEventListener('mousedown', handlePointerDown);
+        canvasElement.addEventListener('mousemove', handlePointerMove);
+        window.addEventListener('mouseup', handlePointerUp);
+
+        canvasElement.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            handlePointerDown(e);
+        }, { passive: false });
+        canvasElement.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            handlePointerMove(e);
+        }, { passive: false });
+        window.addEventListener('touchend', handlePointerUp);
+
+        // --- Direct Screen Touch Fallback for virtual start button ---
+        document.getElementById('virtualStartBtn').addEventListener('click', () => {
+            startGame();
+        });
+
+        // --- STREAMING_CHUNK: Integrating MediaPipe Hands for real-time tracking ---
+        // --- MediaPipe Framework Setup ---
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.65,
+            minTrackingConfidence: 0.65
+        });
+
+        hands.onResults((results) => {
+            const dot = document.getElementById('trackingStatusDot');
+            const label = document.getElementById('trackingStatusText');
+            
+            const coverDot = document.getElementById('coverStatusDot');
+            const coverLabel = document.getElementById('coverStatusText');
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const connectedText = "ตรวจจับพบมือพร้อมเล่น";
+                dot.className = "w-2.5 h-2.5 rounded-full bg-green-500 animate-ping";
+                label.innerText = connectedText;
+
+                if (coverDot) {
+                    coverDot.className = "w-2.5 h-2.5 rounded-full bg-green-500 animate-ping";
+                    coverLabel.innerText = connectedText;
+                }
+
+                const landmarks = results.multiHandLandmarks[0];
+                const thumbTip = landmarks[4];
+                const indexTip = landmarks[8];
+
+                const tX = thumbTip.x * canvasElement.width;
+                const tY = thumbTip.y * canvasElement.height;
+                const iX = indexTip.x * canvasElement.width;
+                const iY = indexTip.y * canvasElement.height;
+
+                currentPinchPoint = {
+                    x: (tX + iX) / 2,
+                    y: (tY + iY) / 2
+                };
+
+                const dist = Math.hypot(tX - iX, tY - iY);
+                const pinchThreshold = 45; 
+
+                isPinching = (dist < pinchThreshold);
+            } else {
+                if(!mouseIsDown) {
+                    const disconnectedText = "ไม่พบมือ (ใช้นิ้วลาก/จิ้มจอสัมผัสได้)";
+                    dot.className = "w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse";
+                    label.innerText = disconnectedText;
+
+                    if (coverDot) {
+                        coverDot.className = "w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse";
+                        coverLabel.innerText = "ไม่พบมือ (แตะปุ่มเพื่อเริ่มเล่นได้)";
+                    }
+                    
+                    currentPinchPoint = null;
+                    isPinching = false;
+                }
+            }
+        });
+
+        let camera = null;
+        function initCamera() {
+            camera = new Camera(videoElement, {
+                onFrame: async () => {
+                    await hands.send({ image: videoElement });
+                },
+                width: 640,
+                height: 480
+            });
+            
+            camera.start()
+                .then(() => {
+                    const readyText = "กล้องตรวจจับมือพร้อมทำงานแล้ว!";
+                    document.getElementById('trackingStatusDot').className = "w-2.5 h-2.5 rounded-full bg-yellow-400";
+                    document.getElementById('trackingStatusText').innerText = readyText;
+                    
+                    document.getElementById('coverStatusDot').className = "w-2.5 h-2.5 rounded-full bg-yellow-400";
+                    document.getElementById('coverStatusText').innerText = readyText;
+                })
+                .catch((e) => {
+                    console.warn("Camera access fallback.", e);
+                    const disabledText = "ปิดการใช้งานกล้อง (ระบบสัมผัสหน้าจอ)";
+                    document.getElementById('trackingStatusText').innerText = disabledText;
+                    document.getElementById('coverStatusText').innerText = disabledText;
+                });
+        }
+
+        document.getElementById('restartBtn').addEventListener('click', startGame);
+
+        window.onload = function() {
+            initCamera();
+            initBasketSlots();
+            requestAnimationFrame(animationFrameHandler);
+        };
+    </script>
+</body>
+</html>
